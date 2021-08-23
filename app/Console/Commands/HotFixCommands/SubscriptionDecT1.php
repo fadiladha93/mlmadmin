@@ -1,0 +1,866 @@
+<?php
+
+
+namespace App\Console\Commands\HotFixCommands;
+
+use Illuminate\Console\Command;
+use DB;
+use PDO;
+use App\Address;
+use App\BoomerangInv;
+use App\Helper;
+use App\Order;
+use App\OrderItem;
+use App\PaymentMethod;
+use App\PaymentMethodType;
+use App\Product;
+use App\SubscriptionHistory;
+use App\User;
+use App\UserType;
+
+class SubscriptionDecT1 extends Command
+{
+
+    const SUBSCRIPTION_SUCCESS = 1;
+    const SUBSCRIPTION_FAIL = 0;
+    const SUBSCRIPTION_PAYMENT_FAIL_MSG = "Monthly subscription payment fail";
+    const SUBSCRIPTION_PAYMENT_SUCCESS_MSG = "Monthly subscription payment success";
+    const NEXT_ATTEMPT_DURATION_DAYS = 2; // - 48 hours.
+
+    public $payment_method_id = 0;
+
+    /**
+     * The name and signature of the console command.
+     *
+     * @var string
+     */
+    protected $signature = 'command:runDecT1';
+
+    /**
+     * The console command description.
+     *
+     * @var string
+     */
+    protected $description = 'This imports and runs subscriptions missed in Dec 2019';
+
+    /**
+     * Create a new command instance.
+     *
+     * @return void
+     */
+    public function __construct()
+    {
+        parent::__construct();
+    }
+
+    /**
+     * @param $filePath
+     * @return array
+     */
+    private function parseCsv($filePath)
+    {
+        $csv = array_map('str_getcsv', file($filePath));
+
+        array_walk($csv, function (&$a) use ($csv) {
+            $a = array_combine($csv[0], $a);
+        });
+
+        array_shift($csv);
+
+        return $csv;
+    }
+
+    /**
+     * Execute the console command.
+     *
+     * @return mixed
+     */
+    public function handle()
+    {
+        set_time_limit(0);
+
+        $subs_to_do = $this->parseCsv(public_path() . '/InvalidMerchantIDRun_T1.csv');
+
+        // Get a list of users (user ids) with successful subscription orders
+        $user_subs_query = 'SELECT
+                        users.id
+                    FROM
+                        "public"."orderItem"
+                        JOIN orders on orders.id = "public"."orderItem".orderid
+                        JOIN users on users.id = orders.userid
+                    WHERE
+                        "public"."orderItem".productid IN (11,12,26)
+                        AND "public"."orderItem".created_date > \'2019-12-13\'
+                        AND orders.statuscode = 1
+                    ';
+
+        $nextDate = date('Y-m-d');
+
+        $user_subs = DB::connection()->getPdo()->query($user_subs_query)->fetchAll(\PDO::FETCH_ASSOC);
+
+        $doubleCheckList = array();
+        foreach ($user_subs as $user_sub) {
+            $doubleCheckList[] = $user_sub["id"];
+        }
+
+        foreach ($subs_to_do as $missing_sub) {
+
+            $userId = intval(trim($missing_sub['user_id']));
+            echo $this->make_response_output('--------------------------------- :', $userId);
+
+            // Check if this user already manually paid their subscription
+            if (in_array($userId, $doubleCheckList)) {
+                //echo "yes";
+                // This user already manually paid their sub, do nothing
+            } else {
+                // echo "no";
+                // Charge this user
+
+                $user = \App\User::getById($userId);
+
+                $product = SubscriptionHistory::getSubscriptionProduct($user->id);
+
+                // Check user has product for payment.
+                if ($product) {
+
+                    $orderBV = $product->bv;
+                    $orderQV = $product->qv;
+                    $orderCV = $product->cv;
+                    $numberOfBoomerangs = $product->num_boomerangs;
+                    $orderSubtotal = $product->price;
+                    $orderTotal = $product->price;
+                    $user_attempt_count = $user->subscription_attempts + 1;
+
+
+                    echo $this->make_response_output('Num boomerang before :', $numberOfBoomerangs . "|" . @BoomerangInv::getInventory($user->id)->pending_tot . "|" . @BoomerangInv::getInventory($user->id)->available_tot);
+
+                    //dd($user->subscription_payment_method_id);
+
+
+                    // - Check and CREATE payment method if not exist any.
+                    if ($user->subscription_payment_method_id == null || trim($user->subscription_payment_method_id) == '') {
+                        // - CREATE payment method with TYPE eWallet.
+                        $payment_method_id = PaymentMethod::addNewRec($user->id, null, null, null, PaymentMethodType::TYPE_E_WALET, null);
+                        DB::table('users')->where('id', $user->id)
+                            ->update(['subscription_payment_method_id' => $payment_method_id]);
+                    } else {
+                        $payment_method_id = $user->subscription_payment_method_id;
+                    }
+
+                    $this->payment_method_id = $payment_method_id;
+
+
+
+                    // - Getting payment method for current user.
+                    $payment_method = PaymentMethod::where('userID', $user->id)
+                        ->where('id', $payment_method_id)
+                        ->where(function ($query) {
+                            $query->where('is_deleted', '=', 0)
+                                ->orWhereNull('is_deleted');
+                        })
+                        ->first();
+
+                     // Disable Ewallet Code
+//                    if (!$payment_method) {
+//                        $payment_method = PaymentMethod::where('userID', $user->id)
+//                            ->where('pay_method_type', PaymentMethodType::TYPE_E_WALET)
+//                            ->first();
+//                    }
+                    // -  Payment process continuing.
+
+                    // echo $this->make_response_output('Payment method: ', 'Credit Card');
+
+                    //-- ||Credit card|| Main --
+                    // -- Getting payment details.
+//-- ||Credit card|| Main --
+
+
+
+                    // - De-Tokenize Credit card details.
+                    $tokenEx = new \tokenexAPI();
+                    $tokenRes = $tokenEx->detokenizeLog(config('api_endpoints.TOKENEXDetokenize'), $payment_method->token);
+                    $tokenRes = $tokenRes['response'];
+
+
+                    // - Check De-Tokenize is success.
+                    if (!$tokenRes->Success) {
+
+                        echo $this->make_response_output('Payment fail: (d) ', 'Subscription payment fail via card - (De-Tokenize) (Selected) ' . $tokenRes->Error);
+
+                        $this->UpdateSubscriptionHistoryOnly($user->id, $nextDate, 0, self::SUBSCRIPTION_FAIL, $product->id, 'Subscription payment fail - (De-Tokenize) (Selected)' . $tokenRes->Error);
+
+                        // NOT TRYING E WALLET
+
+//                        echo $this->make_response_output('Payment status: ', 'Trying eWallet ');
+//                        if ($user->estimated_balance >= $orderTotal) {
+//                            // - ADD order and purchase SENT Email to user.
+//                            $orderId = Order::addNew($user->id, $orderSubtotal, $orderTotal, $orderBV, $orderQV, $orderCV, null, $payment_method_id, null, null, null, null);
+//                            OrderItem::addNew($orderId, $product->id, 1, $orderTotal, $orderBV, $orderQV, $orderCV);
+//                            EwalletTransaction::addPurchase($user->id, EwalletTransaction::MONTHLY_SUBSCRIPTION, (-$product->price), $orderId);
+//                            BoomerangInv::addToInventory($user->id, $numberOfBoomerangs);
+//
+//
+//                            // - Check gflag and Reached maximum payment attempt.
+//                            if ($user->gflag == 1 || $user_attempt_count >= 2) {
+//                                //- SET SRO and iDECIED accounts ACTIVATE.
+//                                // -|| IDecide::enableUser( $user->id );
+//                                // -|| SaveOn::enableUser( $product->id, $user->email, $user->phonenumber, $user->id );
+//                                Helper::reActivateIdecideUser($user->id);
+//                                Helper::reActivateSaveOnUser($user->id, $product->id, $user->distid, self::SUBSCRIPTION_PAYMENT_SUCCESS_MSG);
+//                            }
+//                            $this->UpdateSubscriptionAttempt($user->id, $nextDate, 0, self::SUBSCRIPTION_SUCCESS, $product->id, 'Subscription payment success via eWallet');
+//                            echo $this->make_response_output('Num boomerang after :', BoomerangInv::getInventory($user->id)->pending_tot . "|" . BoomerangInv::getInventory($user->id)->available_tot);
+//                            echo $this->make_response_output('Payment Success: ', 'Subscription payment success via eWallet');
+//                            \MyMail::sendSubscriptionRecurringSuccess($user->firstname, $user->lastname, $user->id, $user->email);
+//                            continue;
+//                        } else {
+//                            $this->UpdateSubscriptionHistoryOnly($user->id, $nextDate, 0, self::SUBSCRIPTION_FAIL, $product->id, 'Subscription payment fail via eWallet');
+//                            echo $this->make_response_output('Payment fail: ', "eWallet balance not enough for subscription");
+//                        }
+
+
+                        // ******************************************************
+                        // ******************************************************
+                        // This will always execute now.
+
+                        // - Check other payment method exist.
+                        $availablePaymentMethod = $this->CheckAvailablePaymentMethod($user, $payment_method->pay_method_type);
+                        if ($availablePaymentMethod !== false) {
+                            if ($payment_method->primary == 1 && $availablePaymentMethod->primary == 1) {
+
+                            } else {
+                                //-- ||Credit card|| --
+                                // -- Getting payment details.
+                                $payment_method = $availablePaymentMethod;
+                                $this->payment_method_id = $payment_method->id;
+                                echo $this->make_response_output('Payment status: ', 'Trying another payment method');
+
+                                // - De-Tokenize Credit card details.
+                                $tokenEx = new \tokenexAPI();
+                                $tokenRes = $tokenEx->detokenizeLog(config('api_endpoints.TOKENEXDetokenize'), $payment_method->token);
+                                $tokenRes = $tokenRes['response'];
+
+                                // - Check De-Tokenize is success.
+                                if (!$tokenRes->Success) {
+
+                                    echo $this->make_response_output('Payment fail: (e) ', 'Subscription payment fail via card - (De-Tokenize)' . $tokenRes->Error);
+
+                                    // - Check gflag and Reached maximum payment attempt.
+                                    if ($user_attempt_count >= 2 || $user->gflag == 1) {
+                                        //-  SRO and iDECIED account DEACTIVATION.
+                                        Helper::deActivateIdecideUser($user->id);
+                                        Helper::deActivateSaveOnUser($user->id, $product->id, $user->distid, self::SUBSCRIPTION_PAYMENT_FAIL_MSG);
+                                        $this->make_deactivate($user->id, 1);
+                                        $this->UpdateSubscriptionAttempt($user->id, $nextDate, (2), self::SUBSCRIPTION_FAIL, $product->id, 'Subscription payment fail - (De-Tokenize)' . $tokenRes->Error, true, true);
+//                                                    Helper::sor_transfer($user->id, Product::ID_NCREASE_ISBO,$user->current_product_id);
+                                    } else {
+                                        $this->UpdateSubscriptionAttempt($user->id, $nextDate, ($user_attempt_count), self::SUBSCRIPTION_FAIL, $product->id, 'Subscription payment fail - (De-Tokenize)' . $tokenRes->Error);
+                                    }
+
+
+                                    \MyMail::sendSubscriptionRecurringFailed($user->firstname, $user->lastname, $user->id, $user->email, 'Subscription payment fail - ' . $tokenRes->Error);
+                                    continue;
+                                }else{
+                                    echo $this->make_response_output('Token: ', 'De-Tokenize Successful');
+                                }
+
+                                $billingAddress = Address::find($payment_method->bill_addr_id);
+
+                                // - Process payment with credit card. -- FORCE PAY ARC
+////                                            $nmiResult = NMIGateway::processPayment($tokenRes->Value, $payment_method->firstname, $payment_method->lastname, $payment_method->expMonth, $payment_method->expYear, $payment_method->cvv, $orderTotal, $billingAddress->address1, $billingAddress->city, $billingAddress->stateprov, $billingAddress->postalcode, $billingAddress->countrycode);
+                                // $nmiResult = \App\Helper::networkMerchants($user, $tokenRes->Value, $payment_method->expYear, $payment_method->expMonth, $product, $billingAddress, $orderTotal, $payment_method->pay_method_type);
+                                $nmiResult = \App\Helper::networkMerchants($user, $tokenRes->Value, $payment_method->expYear, $payment_method->expMonth, $product, $billingAddress, $orderTotal, 9);
+
+
+
+                                $nmiResult['msg'] = $nmiResult['responsetext'];
+                                $nmiResult['error'] = ($nmiResult['response'] == 1 ? 0 : 1);
+                                $auth_code = (!empty($nmiResult['authcode']) ? $nmiResult['authcode'] : "");
+                                $nmiResult['authorization'] = (!empty($nmiResult['transactionid']) ? $nmiResult['transactionid'] . "#" . $auth_code : "");
+
+                                if ($nmiResult['error'] == 1) {
+
+                                    echo $this->make_response_output('Payment fail: (f) ', 'Subscription payment fail via card - ' . $nmiResult['msg']);
+
+                                    // - Check gflag and Reached maximum payment attempt.
+                                    if ($user_attempt_count >= 2 || $user->gflag == 1) {
+                                        //-  SRO and iDECIED account DEACTIVATION.
+                                        Helper::deActivateIdecideUser($user->id);
+                                        Helper::deActivateSaveOnUser($user->id, $product->id, $user->distid, self::SUBSCRIPTION_PAYMENT_FAIL_MSG);
+                                        $this->make_deactivate($user->id, 1);
+                                        $this->UpdateSubscriptionAttempt($user->id, $nextDate, (2), self::SUBSCRIPTION_FAIL, $product->id, 'Subscription payment fail - ' . $nmiResult['msg'], true, true);
+////                                                    Helper::sor_transfer($user->id, Product::ID_NCREASE_ISBO,$user->current_product_id);
+                                    } else {
+                                        $this->UpdateSubscriptionAttempt($user->id, $nextDate, ($user_attempt_count), self::SUBSCRIPTION_FAIL, $product->id, 'Subscription payment fail - ' . $nmiResult['msg']);
+                                    }
+
+
+                                    \MyMail::sendSubscriptionRecurringFailed($user->firstname, $user->lastname, $user->id, $user->email, 'Subscription payment fail - ' . $nmiResult['msg']);
+
+                                    continue;
+                                }
+
+                                $authorization = $nmiResult['authorization'];
+
+                                // - Success payment -  Add payment to our system.
+                                $orderId = Order::addNew($user->id, $orderSubtotal, $orderTotal, $orderBV, $orderQV, $orderCV, $authorization, $payment_method->id, null, null, null, null);
+                                OrderItem::addNew($orderId, $product->id, 1, $orderTotal, $orderBV, $orderQV, $orderCV);
+                                BoomerangInv::addToInventory($user->id, $numberOfBoomerangs);
+
+                                $this->UpdateSubscriptionAttempt($user->id, $nextDate, 0, self::SUBSCRIPTION_SUCCESS, $product->id, 'Subscription payment success via card');
+
+                                if ($availablePaymentMethod->primary == 1) {
+                                    echo $this->make_response_output('Payment success: ', 'Subscription payment success via primary card');
+                                } else {
+                                    echo $this->make_response_output('Payment success: ', 'Subscription payment success via secondary card');
+                                }
+
+                                // - Check gflag and Reached maximum payment attempt.
+                                if ($user->gflag == 1 || $user_attempt_count >= 2) {
+                                    //-  SRO and iDECIED account ACTIVATION.
+                                    // -|| IDecide::enableUser( $user->id );
+                                    // -|| SaveOn::enableUser( $product->id, $user->email, $user->phonenumber, $user->id );
+                                    Helper::reActivateIdecideUser($user->id);
+                                    Helper::reActivateSaveOnUser($user->id, $product->id, $user->distid, self::SUBSCRIPTION_PAYMENT_SUCCESS_MSG);
+                                }
+                                \MyMail::sendSubscriptionRecurringSuccess($user->firstname, $user->lastname, $user->id, $user->email);
+                                continue;
+                            }
+                        }
+
+                        // ******************************************************
+                        // ******************************************************
+                        // This will always execute now.
+
+                        // - Check gflag and Reached maximum payment attempt.
+                        if ($user_attempt_count >= 2 || $user->gflag == 1) {
+                            //-  SRO and iDECIED account DEACTIVATION.
+                            Helper::deActivateIdecideUser($user->id);
+                            Helper::deActivateSaveOnUser($user->id, $product->id, $user->distid, self::SUBSCRIPTION_PAYMENT_FAIL_MSG);
+                            $this->make_deactivate($user->id, 1);
+                            $this->UpdateSubscriptionAttempt($user->id, $nextDate, (2), self::SUBSCRIPTION_FAIL, $product->id, 'Subscription payment fail - (De-Tokenize)' . $tokenRes->Error, true, true);
+////                                    Helper::sor_transfer($user->id, Product::ID_NCREASE_ISBO,$user->current_product_id);
+                        } else {
+                            $this->UpdateSubscriptionAttempt($user->id, $nextDate, ($user_attempt_count), self::SUBSCRIPTION_FAIL, $product->id, 'Subscription payment fail - (De-Tokenize)' . $tokenRes->Error);
+                        }
+
+                        \MyMail::sendSubscriptionRecurringFailed($user->firstname, $user->lastname, $user->id, $user->email, 'Subscription payment fail - ' . $tokenRes->Error);
+                        continue;
+                    }else{
+                        echo $this->make_response_output('Token: ', 'De-Tokenize Successful');
+                    }
+
+                    $billingAddress = Address::find($payment_method->bill_addr_id);
+
+                    // - Process payment with credit card. -- FORCE PAY ARC
+                    // $nmiResult = NMIGateway::processPayment($tokenRes->Value, $payment_method->firstname, $payment_method->lastname, $payment_method->expMonth, $payment_method->expYear, $payment_method->cvv, $orderTotal, $billingAddress->address1, $billingAddress->city, $billingAddress->stateprov, $billingAddress->postalcode, $billingAddress->countrycode);
+                    // $nmiResult = \App\Helper::networkMerchants($user, $tokenRes->Value, $payment_method->expYear, $payment_method->expMonth, $product, $billingAddress, $orderTotal, $payment_method->pay_method_type);
+                    $nmiResult = \App\Helper::networkMerchants($user, $tokenRes->Value, $payment_method->expYear, $payment_method->expMonth, $product, $billingAddress, $orderTotal, 9);
+
+
+                    $nmiResult['msg'] = $nmiResult['responsetext'];
+                    $nmiResult['error'] = ($nmiResult['response'] == 1 ? 0 : 1);
+                    $auth_code = (!empty($nmiResult['authcode']) ? $nmiResult['authcode'] : "");
+                    $nmiResult['authorization'] = (!empty($nmiResult['transactionid']) ? $nmiResult['transactionid'] . "#" . $auth_code : "");
+
+
+                    if ($nmiResult['error'] == 1) {
+                        echo $this->make_response_output('Payment fail: (g) ', 'Subscription payment fail via card - (selected) - ' . $nmiResult['msg']);
+                        $this->UpdateSubscriptionHistoryOnly($user->id, $nextDate, 0, self::SUBSCRIPTION_FAIL, $product->id, 'Subscription payment fail - (Selected) ' . $nmiResult['msg']);
+
+
+                        // NOT TRYING EWALLET
+//                        echo $this->make_response_output('Payment status: ', 'Trying eWallet ');
+//                        if ($user->estimated_balance >= $orderTotal) {
+//                            // - ADD order and purchase SENT Email to user.
+//                            $orderId = Order::addNew($user->id, $orderSubtotal, $orderTotal, $orderBV, $orderQV, $orderCV, null, $payment_method_id, null, null, null, null);
+//                            OrderItem::addNew($orderId, $product->id, 1, $orderTotal, $orderBV, $orderQV, $orderCV);
+//                            EwalletTransaction::addPurchase($user->id, EwalletTransaction::MONTHLY_SUBSCRIPTION, (-$product->price), $orderId);
+//                            BoomerangInv::addToInventory($user->id, $numberOfBoomerangs);
+//                            // - Check gflag and Reached maximum payment attempt.
+//                            if ($user->gflag == 1 || $user_attempt_count >= 2) {
+//                                //- SET SRO and iDECIED accounts ACTIVATE.
+//                                // -|| IDecide::enableUser( $user->id );
+//                                // -|| SaveOn::enableUser( $product->id, $user->email, $user->phonenumber, $user->id );
+//                                Helper::reActivateIdecideUser($user->id);
+//                                Helper::reActivateSaveOnUser($user->id, $product->id, $user->distid, self::SUBSCRIPTION_PAYMENT_SUCCESS_MSG);
+//                            }
+//                            $this->UpdateSubscriptionAttempt($user->id, $nextDate, 0, self::SUBSCRIPTION_SUCCESS, $product->id, 'Subscription payment success via eWallet');
+//                            echo $this->make_response_output('Num boomerang after :', BoomerangInv::getInventory($user->id)->pending_tot . "|" . BoomerangInv::getInventory($user->id)->available_tot);
+//                            echo $this->make_response_output('Payment Success: ', 'Subscription payment success via eWallet');
+//                            \MyMail::sendSubscriptionRecurringSuccess($user->firstname, $user->lastname, $user->id, $user->email);
+//                            continue;
+//                        } else {
+//                            $this->UpdateSubscriptionHistoryOnly($user->id, $nextDate, 0, self::SUBSCRIPTION_FAIL, $product->id, 'Subscription payment Fail via eWallet');
+//                            echo $this->make_response_output('Payment fail: ', "eWallet balance not enough for subscription");
+//                        }
+
+
+                        // ******************************************************
+                        // ******************************************************
+                        // This will always execute now.
+
+                        // - Check other payment method exist.
+                        $availablePaymentMethod = $this->CheckAvailablePaymentMethod($user, $payment_method->pay_method_type);
+                        if ($availablePaymentMethod !== false) {
+                            if ($payment_method->primary == 1 && $availablePaymentMethod->primary == 1) {
+
+                            } else {
+                                echo $this->make_response_output('Payment status: ', 'Trying with another payment method');
+
+                                //-- ||Credit card|| --
+                                // -- Getting payment details.
+                                $payment_method = $availablePaymentMethod;
+                                $this->payment_method_id = $payment_method->id;
+                                // - De-Tokenize Credit card details.
+                                $tokenEx = new \tokenexAPI();
+                                $tokenRes = $tokenEx->detokenizeLog(config('api_endpoints.TOKENEXDetokenize'), $payment_method->token);
+                                $tokenRes = $tokenRes['response'];
+
+                                // - Check De-Tokenize is success.
+                                if (!$tokenRes->Success) {
+
+                                    echo $this->make_response_output('Payment fail: (h) ', 'Subscription payment fail via card - (De-Tokenize)' . $tokenRes->Error);
+
+                                    // - Check gflag and Reached maximum payment attempt.
+                                    if ($user_attempt_count >= 2 || $user->gflag == 1) {
+                                        //-  SRO and iDECIED account DEACTIVATION.
+                                        Helper::deActivateIdecideUser($user->id);
+                                        Helper::deActivateSaveOnUser($user->id, $product->id, $user->distid, self::SUBSCRIPTION_PAYMENT_FAIL_MSG);
+                                        $this->make_deactivate($user->id, 1);
+                                        $this->UpdateSubscriptionAttempt($user->id, $nextDate, (2), self::SUBSCRIPTION_FAIL, $product->id, 'Subscription payment fail - (De-Tokenize)' . $tokenRes->Error, true, true);
+////                                                    Helper::sor_transfer($user->id, Product::ID_NCREASE_ISBO,$user->current_product_id);
+                                    } else {
+                                        $this->UpdateSubscriptionAttempt($user->id, $nextDate, ($user_attempt_count), self::SUBSCRIPTION_FAIL, $product->id, 'Subscription payment fail - (De-Tokenize)' . $tokenRes->Error);
+                                    }
+
+
+                                    \MyMail::sendSubscriptionRecurringFailed($user->firstname, $user->lastname, $user->id, $user->email, 'Subscription payment fail - ' . $tokenRes->Error);
+                                    continue;
+                                }else{
+                                    echo $this->make_response_output('Token: ', 'De-Tokenize Successful');
+                                }
+
+                                $billingAddress = Address::find($payment_method->bill_addr_id);
+
+                                // - Process payment with credit card. -- FORCE PAY ARC
+                                // $nmiResult = NMIGateway::processPayment($tokenRes->Value, $payment_method->firstname, $payment_method->lastname, $payment_method->expMonth, $payment_method->expYear, $payment_method->cvv, $orderTotal, $billingAddress->address1, $billingAddress->city, $billingAddress->stateprov, $billingAddress->postalcode, $billingAddress->countrycode);
+                                // $nmiResult = \App\Helper::networkMerchants($user, $tokenRes->Value, $payment_method->expYear, $payment_method->expMonth, $product, $billingAddress, $orderTotal, $payment_method->pay_method_type);
+                                $nmiResult = \App\Helper::networkMerchants($user, $tokenRes->Value, $payment_method->expYear, $payment_method->expMonth, $product, $billingAddress, $orderTotal, 9);
+
+
+                                $nmiResult['msg'] = $nmiResult['responsetext'];
+                                $nmiResult['error'] = ($nmiResult['response'] == 1 ? 0 : 1);
+                                $auth_code = (!empty($nmiResult['authcode']) ? $nmiResult['authcode'] : "");
+                                $nmiResult['authorization'] = (!empty($nmiResult['transactionid']) ? $nmiResult['transactionid'] . "#" . $auth_code : "");
+
+                                if ($nmiResult['error'] == 1) {
+
+                                    echo $this->make_response_output('Payment fail: (i) ', 'Subscription payment fail via card - ' . $nmiResult['msg']);
+
+                                    // - Check gflag and Reached maximum payment attempt.
+                                    if ($user_attempt_count >= 2 || $user->gflag == 1) {
+                                        //-  SRO and iDECIED account DEACTIVATION.
+                                        Helper::deActivateIdecideUser($user->id);
+                                        Helper::deActivateSaveOnUser($user->id, $product->id, $user->distid, self::SUBSCRIPTION_PAYMENT_FAIL_MSG);
+                                        $this->make_deactivate($user->id, 1);
+                                        $this->UpdateSubscriptionAttempt($user->id, $nextDate, (2), self::SUBSCRIPTION_FAIL, $product->id, 'Subscription payment fail - ' . $nmiResult['msg'], true, true);
+////                                                    Helper::sor_transfer($user->id, Product::ID_NCREASE_ISBO,$user->current_product_id);
+                                    } else {
+                                        $this->UpdateSubscriptionAttempt($user->id, $nextDate, ($user_attempt_count), self::SUBSCRIPTION_FAIL, $product->id, 'Subscription payment fail - ' . $nmiResult['msg']);
+                                    }
+
+
+                                    \MyMail::sendSubscriptionRecurringFailed($user->firstname, $user->lastname, $user->id, $user->email, 'Subscription payment fail - ' . $nmiResult['msg']);
+
+                                    continue;
+                                }
+
+                                $authorization = $nmiResult['authorization'];
+
+                                // - Success payment -  Add payment to our system.
+                                $orderId = Order::addNew($user->id, $orderSubtotal, $orderTotal, $orderBV, $orderQV, $orderCV, $authorization, $payment_method->id, null, null, null, null);
+                                OrderItem::addNew($orderId, $product->id, 1, $orderTotal, $orderBV, $orderQV, $orderCV);
+                                BoomerangInv::addToInventory($user->id, $numberOfBoomerangs);
+
+                                $this->UpdateSubscriptionAttempt($user->id, $nextDate, 0, self::SUBSCRIPTION_SUCCESS, $product->id, 'Subscription payment success via card');
+
+                                if ($availablePaymentMethod->primary == 1) {
+                                    echo $this->make_response_output('Payment success: ', 'Subscription payment success via primary card');
+                                } else {
+                                    echo $this->make_response_output('Payment success: ', 'Subscription payment success via secondary card');
+                                }
+
+                                // - Check gflag and Reached maximum payment attempt.
+                                if ($user->gflag == 1 || $user_attempt_count >= 2) {
+                                    //-  SRO and iDECIED account ACTIVATION.
+                                    // -|| IDecide::enableUser( $user->id );
+                                    // -|| SaveOn::enableUser( $product->id, $user->email, $user->phonenumber, $user->id );
+                                    Helper::reActivateIdecideUser($user->id);
+                                    Helper::reActivateSaveOnUser($user->id, $product->id, $user->distid, self::SUBSCRIPTION_PAYMENT_SUCCESS_MSG);
+                                }
+                                \MyMail::sendSubscriptionRecurringSuccess($user->firstname, $user->lastname, $user->id, $user->email);
+                                continue;
+                            }
+                        }
+
+
+                        // ******************************************************
+                        // ******************************************************
+
+
+                        // echo $this->make_response_output( 'Payment fail: (j) ', 'Subscription payment fail via card - ' . $nmiResult['msg'] );
+                        // - Check gflag and Reached maximum payment attempt.
+                        if ($user_attempt_count >= 2 || $user->gflag == 1) {
+                            //-  SRO and iDECIED account DEACTIVATION.
+                            Helper::deActivateIdecideUser($user->id);
+                            Helper::deActivateSaveOnUser($user->id, $product->id, $user->distid, self::SUBSCRIPTION_PAYMENT_FAIL_MSG);
+                            $this->make_deactivate($user->id, 1);
+                            $this->UpdateSubscriptionAttempt($user->id, $nextDate, (2), self::SUBSCRIPTION_FAIL, $product->id, 'Subscription payment fail - ' . $nmiResult['msg'], true, true);
+////                                    Helper::sor_transfer($user->id, Product::ID_NCREASE_ISBO,$user->current_product_id);
+                        } else {
+                            $this->UpdateSubscriptionAttempt($user->id, $nextDate, ($user_attempt_count), self::SUBSCRIPTION_FAIL, $product->id, 'Subscription payment fail - ' . $nmiResult['msg']);
+                        }
+
+                        \MyMail::sendSubscriptionRecurringFailed($user->firstname, $user->lastname, $user->id, $user->email, 'Subscription payment fail - ' . $nmiResult['msg']);
+
+                        continue;
+                    }
+                    $authorization = $nmiResult['authorization'];
+                    // - Success payment -  Add payment to our system.
+                    $orderId = Order::addNew($user->id, $orderSubtotal, $orderTotal, $orderBV, $orderQV, $orderCV, $authorization, $payment_method->id, null, null, null, null);
+                    OrderItem::addNew($orderId, $product->id, 1, $orderTotal, $orderBV, $orderQV, $orderCV);
+                    BoomerangInv::addToInventory($user->id, $numberOfBoomerangs);
+
+                    $this->UpdateSubscriptionAttempt($user->id, $nextDate, 0, self::SUBSCRIPTION_SUCCESS, $product->id, 'Subscription payment success via card');
+                    echo $this->make_response_output('Payment success: ', 'Subscription payment success via card');
+                    // - Check gflag and Reached maximum payment attempt.
+                    if ($user->gflag == 1 || $user_attempt_count >= 2) {
+                        //-  SRO and iDECIED account ACTIVATION.
+                        // -|| IDecide::enableUser( $user->id );
+                        // -|| SaveOn::enableUser( $product->id, $user->email, $user->phonenumber, $user->id );
+                        Helper::reActivateIdecideUser($user->id);
+                        Helper::reActivateSaveOnUser($user->id, $product->id, $user->distid, self::SUBSCRIPTION_PAYMENT_SUCCESS_MSG);
+                    }
+
+                    echo $this->make_response_output('Num boomerang before :', BoomerangInv::getInventory($user->id)->pending_tot . "|" . BoomerangInv::getInventory($user->id)->available_tot);
+
+
+                    \MyMail::sendSubscriptionRecurringSuccess($user->firstname, $user->lastname, $user->id, $user->email);
+
+
+                } else {
+                    // - Product is empty for current user
+                    $this->UpdateSubscriptionAttempt($user->id, date("Y-m-d"), (0), self::SUBSCRIPTION_FAIL, 0, "Subscription payment fail - Doesn't match any product for the user");
+                }
+
+            } // end if in_array
+        }
+
+    }
+
+    public function make_deactivate($user_id, $type = 1)
+    {
+        $user = User::where('id', $user_id);
+        if ($type == 1) {
+            $user->update(['is_sites_deactivate' => 1]);
+        } elseif ($type == 2) {
+            $user->update(['is_deactivate' => 1]);
+        }
+    }
+
+    public function make_activate($user_id, $type = 1)
+    {
+        $user = User::where('id', $user_id);
+        if ($type == 1) {
+            $user->update(['is_sites_deactivate' => 0]);
+        } elseif ($type == 2) {
+            $user->update(['is_deactivate' => 0]);
+        }
+    }
+
+    private function terminateUserAfterSubscriptionFail()
+    {
+        $users = \App\User::terminateUserDetailsAfterSubscriptionFail();
+        //   echo "\nTerminate users:- " . count($users);
+        foreach ($users as $user) {
+            \App\User::where('id', $user->id)->update(['account_status' => \App\User::ACC_STATUS_TERMINATED]);
+        }
+    }
+
+    private function deactvivateIdecideSorUserAfterSubscriptionFail()
+    {
+
+        $users = \App\User::gracePeriodUsers();
+        echo "\n\n\nGrace period users count:- " . count($users);
+        foreach ($users as $user) {
+//            //            $idecide = \App\IDecide::getIDecideUserId($user->id);
+//            //            if (!empty($idecide)) {
+//            //                \App\Helper::deActivateIdecideUser($user->id);
+//            //            }
+            $sor = \App\SaveOn::getSORUserInfo($user->id);
+            if (!empty($sor)) {
+                \App\Helper::deActivateSaveOnUser($user->id, $sor->product_id, $user->distid, \App\SaveOn::USER_DISABLE_FOR_SUBSCRIPTION_FAIL);
+            }
+//            Helper::sor_transfer($user->id, Product::ID_NCREASE_ISBO, $user->current_product_id);
+            \App\User::where('id', $user->id)->update(['gflag' => 0]);
+        }
+    }
+
+    public function checkValidCardPaymentMethod($paymentMethod)
+    {
+        if (!empty($paymentMethod) && !empty($paymentMethod->token) && !empty($paymentMethod->expMonth) && !empty($paymentMethod->expYear)) {
+            return true;
+        }
+        return false;
+    }
+
+    public function CheckAvailablePaymentMethod($userObj, $current_payment_method)
+    {
+        $payment_methods = PaymentMethod::where('userID', $userObj->id)
+            ->where(function ($query) {
+                $query->where('is_deleted', '=', 0)
+                    ->orWhereNull('is_deleted');
+            })
+            ->get();
+        $newPaymentMethod = false;
+
+        if ($payment_methods) {
+
+//            foreach ($payment_methods as $payment_method) {
+//                if ($payment_method->is_subscription == 1 && $this->checkValidCardPaymentMethod($payment_method)) {
+//                    $newPaymentMethod = $payment_method;
+//                    break;
+//                } elseif ($payment_method->primary == 1 && $current_payment_method == PaymentMethodType::TYPE_E_WALET) {
+//                    $newPaymentMethod = $payment_method;
+//                }
+//            }
+
+
+            foreach ($payment_methods as $payment_method) {
+                if ($payment_method->primary == 1 && $this->checkValidCardPaymentMethod($payment_method)) {
+                    $newPaymentMethod = $payment_method;
+                    break;
+                }
+                // If primary fails CC, try primary e-Wallet
+                if ($payment_method->primary == 1 && $current_payment_method == PaymentMethodType::TYPE_E_WALET) {
+                    $newPaymentMethod = $payment_method;
+                }
+                // Now try non Primary forms of payment
+                if ($this->checkValidCardPaymentMethod($payment_method) && $current_payment_method == PaymentMethodType::TYPE_CREDIT_CARD) {
+                    $newPaymentMethod = $payment_method;
+                    break;
+                }
+                if ($this->checkValidCardPaymentMethod($payment_method) && $current_payment_method == PaymentMethodType::TYPE_SECONDARY_CC) {
+                    $newPaymentMethod = $payment_method;
+                    break;
+                }
+                if ($this->checkValidCardPaymentMethod($payment_method) && $current_payment_method == PaymentMethodType::TYPE_T1_PAYMENTS) {
+                    $newPaymentMethod = $payment_method;
+                    break;
+                }
+                if ($this->checkValidCardPaymentMethod($payment_method) && $current_payment_method == PaymentMethodType::TYPE_T1_PAYMENTS_SECONDARY_CC) {
+                    $newPaymentMethod = $payment_method;
+                    break;
+                }
+                if ($this->checkValidCardPaymentMethod($payment_method) && $current_payment_method == PaymentMethodType::TYPE_T1_TYPE) {
+                    $newPaymentMethod = $payment_method;
+                    break;
+                }
+            }
+
+
+        }
+
+        return $newPaymentMethod;
+    }
+
+    public function UpdateSubscriptionHistoryOnly($user_id, $attempt_date, $attempt_count, $status, $products_id, $response = null, $subscription_date = false)
+    {
+        $user = User::find($user_id);
+        if ($user) {
+
+            // - Add subscription history.
+            $subscription = new SubscriptionHistory();
+            $subscription->user_id = $user_id;
+            $subscription->subscription_product_id = $products_id;
+            $subscription->attempted_date = $attempt_date;
+            $subscription->attempt_count = $attempt_count;
+            $subscription->payment_method_id = $this->payment_method_id;
+            $subscription->response = $response;
+            $subscription->next_attempt_date = $user->next_subscription_date;
+            $subscription->status = $status;
+            $subscription->save();
+        } else {
+
+        }
+    }
+
+    public function UpdateSubscriptionAttempt($user_id, $attempt_date, $attempt_count, $status, $products_id, $response = null, $userAttemptFail = false, $more_chances_count = false)
+    {
+
+        $user = User::find($user_id);
+        if ($user) {
+
+            // - Get attempt count MAX = 2
+            $attempt_count = ($attempt_count > 1) ? 2 : $attempt_count;
+
+            // - User has passed attempt limit OR gflag user(final chance for user).
+            if (!$userAttemptFail) {
+                $userAttemptFail = ($attempt_count > 1) ? true : false;
+            }
+
+            // -  Getting next subscription date.
+            $subscription_date = $this->GetNextSubscriptionDate($user->created_date, $status, $user->original_subscription_date, $userAttemptFail);
+
+            if ($attempt_count !== false) {
+
+                if ($subscription_date) {
+
+                    // - Update next and original subscription date.
+                    $update_query = [
+                        'next_subscription_date' => $subscription_date['next_subscription_date'],
+                        'subscription_attempts' => $attempt_count,
+                        'original_subscription_date' => $subscription_date['original_subscription_date'],
+                    ];
+
+                    // - Previous month payment failed user.
+                    if ($more_chances_count != false) {
+                        // -  Again 2nd chance payment failed user.
+                        if ($userAttemptFail) {
+                            $update_query['subscription_attempts'] = 0;
+                        }
+                    }
+
+                    // - gFlagged users payment success.
+                    if ($status == self::SUBSCRIPTION_SUCCESS) {
+                        $update_query['gflag'] = 0;
+                        $update_query['payment_fail_count'] = 0;
+                    }
+
+
+                    User::where('id', $user_id)
+                        ->update($update_query);
+
+                    $user_fail_month_count = $user->payment_fail_count;
+                    // - Payment failed on current month.
+                    if ($more_chances_count != false) {
+                        if ($userAttemptFail) {
+                            $user_fail_month_count = $user_fail_month_count + 1;
+                            User::where('id', $user_id)
+                                ->update(['payment_fail_count' => $user_fail_month_count]);
+                        }
+                    }
+
+                    echo $this->make_response_output("Update date: ", 'Next and original subscription date');
+                    print_r($update_query);
+                    echo $this->make_response_output("Total monthly payment fail count: ", '--' . $user_fail_month_count . '--');
+
+                    // - Add subscription history.
+                    $subscription = new SubscriptionHistory();
+                    $subscription->user_id = $user_id;
+                    $subscription->subscription_product_id = $products_id;
+                    $subscription->attempted_date = $attempt_date;
+                    $subscription->attempt_count = $attempt_count;
+                    $subscription->payment_method_id = $this->payment_method_id;
+                    $subscription->response = $response;
+                    $subscription->next_attempt_date = $subscription_date['next_subscription_date'];
+                    $subscription->status = $status;
+                    $subscription->save();
+                }
+            } else {
+
+            }
+        } else {
+
+        }
+    }
+
+    public function GetNextSubscriptionDate($created_date, $status = null, $last_subscription_date = false, $userAttemptFail = false)
+    {
+
+        $next_subscription_date = null;
+        $original_subscription_date = null;
+
+        // $create_date_array = explode('-', $created_date);
+        // -  Check last subscription date exist
+        if ($last_subscription_date && trim($last_subscription_date) != '') {
+
+            // -  Set month and year for calculate next subscription date.
+            $last_subscription_date_array = explode('-', $last_subscription_date);
+
+            $current_month = ltrim($last_subscription_date_array[1], 0);
+            $current_year = ltrim($last_subscription_date_array[0], 0);
+            $created_day = ltrim($last_subscription_date_array[2], 0);
+        } else {
+            $current_month = ltrim(date('m'), 0);
+            $current_year = ltrim(date('Y'), 0);
+            $created_day = ltrim(date('d'), 0);
+        }
+
+        // - Check day is exist.
+//        if (isset($create_date_array[2])) {
+        //			$created_day = ltrim( $create_date_array[2], 0 ); // - for created date filter.
+        //$created_day = ltrim(date('d'), 0);
+        // Set day limit to below 26.
+        if ($created_day <= 25) {
+            $new_sub_day = $created_day;
+        } else {
+            $new_sub_day = 25;
+        }
+
+        if ($status === self::SUBSCRIPTION_SUCCESS) {
+            // - Success payment..
+            // - Checking month and SET next month for next subscription
+            if ($current_month < 12) {
+                $original_subscription_date = $current_year . "-" . $this->AddZeroPrefix($current_month + 1) . "-" . $this->AddZeroPrefix($new_sub_day);
+                $next_subscription_date = $current_year . "-" . $this->AddZeroPrefix($current_month + 1) . "-" . $this->AddZeroPrefix($new_sub_day);
+            } else {
+                $original_subscription_date = ($current_year + 1) . "-" . $this->AddZeroPrefix(1) . "-" . $this->AddZeroPrefix($new_sub_day);
+                $next_subscription_date = ($current_year + 1) . "-" . $this->AddZeroPrefix(1) . "-" . $this->AddZeroPrefix($new_sub_day);
+            }
+        } elseif ($status === self::SUBSCRIPTION_FAIL) {
+
+            // - Fail payment..
+            // - Checking month and SET next day for next subscription payment attempt.
+            if ($current_month < 12) {
+                $original_subscription_date = $current_year . "-" . $this->AddZeroPrefix($current_month) . "-" . $this->AddZeroPrefix($new_sub_day);
+                $next_subscription_date = $current_year . "-" . $this->AddZeroPrefix($current_month) . "-" . $this->AddZeroPrefix($new_sub_day + self::NEXT_ATTEMPT_DURATION_DAYS);
+
+                // - User reached maximum attempt count or gflaged users SET to next month.
+                if ($userAttemptFail) {
+                    $original_subscription_date = $current_year . "-" . $this->AddZeroPrefix($current_month + 1) . "-" . $this->AddZeroPrefix($new_sub_day);
+                    $next_subscription_date = $current_year . "-" . $this->AddZeroPrefix($current_month + 1) . "-" . $this->AddZeroPrefix($new_sub_day);
+                }
+            } else {
+                $original_subscription_date = ($current_year) . "-" . $this->AddZeroPrefix(12) . "-" . $this->AddZeroPrefix($new_sub_day);
+                $next_subscription_date = ($current_year) . "-" . $this->AddZeroPrefix(12) . "-" . $this->AddZeroPrefix($new_sub_day + self::NEXT_ATTEMPT_DURATION_DAYS);
+
+                // - User reached maximum attempt count or gflaged users SET to next month.
+                if ($userAttemptFail) {
+                    $original_subscription_date = ($current_year + 1) . "-" . $this->AddZeroPrefix(1) . "-" . $this->AddZeroPrefix($new_sub_day);
+                    $next_subscription_date = ($current_year + 1) . "-" . $this->AddZeroPrefix(1) . "-" . $this->AddZeroPrefix($new_sub_day);
+                }
+            }
+        }
+
+        return [
+            'next_subscription_date' => $next_subscription_date,
+            'original_subscription_date' => $original_subscription_date
+        ];
+//        }
+        //return false;
+    }
+
+
+    public function AddZeroPrefix($str)
+    {
+        return str_pad($str, 2, '0', STR_PAD_LEFT);
+    }
+
+    public function make_response_output($title, $data, $newline = true)
+    {
+
+        return '<pre><strong>' . $title . ":</strong> " . $data . (($newline) ? "" . PHP_EOL : '') . "</pre>";
+    }
+}

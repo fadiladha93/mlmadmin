@@ -1,0 +1,20 @@
+Order Id,  Chargeback Reason,          Subject,                           CB Id,   Merchant,Order Date, Chargeback Date,Days Btwn,Deadline Date,           Amount,CB Amount,   Card Brand,BIN#,  Last 4,Name on Card
+5408974327,No Cardholder Authorization,Auto Represented Chargeback (5613),10590899,T1,      6/4/20,     6/11/20,        7,        "Tuesday June 16, 2020", 135.2, 100.12 (USD),MASTERCARD,516075,5613,  ABDELMAJID SAIRE
+5408974327,No Cardholder Authorization,Instant Represented Chargeback (5613),10603039,T1,6/4/20,6/14/20,10,"Thursday June 18, 2020",135.2,100.12 (USD),MASTERCARD,516075,5613,ABDELMAJID SAIRE
+5348473571,Other Fraud Card Absent,Chargeback Notification (1772),10575549,T1,5/7/20,6/4/20,28,"Tuesday June 9, 2020",848.95,913.84 (TWD),VISA,428440,1772,ABDOU SOUMARE
+5360694213,No Cardholder Authorization,Chargeback Notification (8711),10573821,T1,5/13/20,6/3/20,21,"Monday June 8, 2020",549,549 (USD),MASTERCARD,544612,8711,ABRAHAM GUENTHER KRAHN
+5303745039,No Cardholder Authorization,Chargeback Notification (8711),10573817,T1,4/17/20,6/3/20,47,"Monday June 8, 2020",299.95,299.95 (USD),MASTERCARD,544612,8711,ABRAHAM KRAHN
+5338870670,No Cardholder Authorization,Chargeback Notification (8711),10573823,T1,5/2/20,6/3/20,32,"Monday June 8, 2020",299,299 (USD),MASTERCARD,544612,8711,ABRAHAM KRAHN
+5368076711,No Cardholder Authorization,Chargeback Notification (8711),10573819,T1,5/16/20,6/3/20,18,"Monday June 8, 2020",99.95,99.95 (USD),MASTERCARD,544612,8711,ABRAHAM KRAHN
+5399165014,Other Fraud Card Absent,Chargeback Notification (7488),10631567,T1,5/31/20,6/26/20,26,"Wednesday July 1, 2020",270.1,325.16 (EUR),VISA,474836,7488,AITEN SALIH
+5415600061,Other Fraud Card Absent,Auto Represented Chargeback (7759),10613787,T1,6/7/20,6/19/20,12,"Wednesday June 24, 2020",2157.14,103.91 (MXN),VISA,477214,7759,ALEJANDRO TAME
+5248120108,No Cardholder Authorization,Auto Represented Chargeback (7159),10611221,T1,3/18/20,6/18/20,92,"Tuesday June 23, 2020",299.95,299.95 (USD),MASTERCARD,530514,7159,ALESSANDRO MOCCI
+5248120108,No Cardholder Authorization,Instant Represented Chargeback (7159),10620399,T1,3/18/20,6/21/20,95,"Thursday June 25, 2020",299.95,299.95 (USD),MASTERCARD,530514,7159,ALESSANDRO MOCCI
+5396746748,Other Fraud Card Absent,Chargeback Notification (1463),10590633,T1,5/30/20,6/11/20,12,"Tuesday June 16, 2020",764.47,959.09 (XXX),VISA,455701,1463,ALEXANDRE PÉPPI
+5375574664,Other Fraud Card Absent,Chargeback Notification (3543),10584019,T1,5/20/20,6/7/20,18,"Thursday June 11, 2020",848.95,848.95 (USD),VISA,473702,3543,ANDREW PIETERS
+5201810041,Cancelled Merchandise/Services,Chargeback Notification (4429),10622721,T1,2/25/20,6/23/20,119,"Friday June 26, 2020",99.95,99.95 (USD),VISA,420767,4429,ANDREY RUDENKO
+5259667082,Cancelled Merchandise/Services,Chargeback Notification (4429),10622723,T1,3/25/20,6/23/20,90,"Friday June 26, 2020",99.95,99.95 (USD),VISA,420767,4429,ANDREY RUDENKO
+5321415557,Cancelled Merchandise/Services,Chargeback Notification (4429),10622785,T1,4/25/20,6/23/20,59,"Friday June 26, 2020",99.95,99.95 (USD),VISA,420767,4429,ANDREY RUDENKO
+5240492013,Other Fraud Card Absent,Chargeback Notification (1247),10619705,T1,3/14/20,6/21/20,99,"Thursday June 25, 2020",49.95,49.95 (USD),VISA,499953,1247,ANGELICA GRANT
+5351548815,Other Fraud Card Absent,Chargeback Notification (3310),10580219,T1,5/8/20,6/5/20,28,"Wednesday June 10, 2020",49.95,53.47 (JMD),VISA,430390,3310,ANSERD KERR
+5396787304,Other Fraud Card Absent,Chargeback Notification (1463),10590629,T1,5/30/20,6/11/20,12,"Tuesday June 16, 2020",764.47,959.09 (XXX),VISA,455701,1463,ANTHONY DADET

@@ -1,0 +1,95 @@
+.m-btn--air
+{
+    color: #ffffff !important;
+}
+
+.m-login__wrapper{
+    padding-top: 40px !important;
+}
+
+.m-login__form-action
+{
+    padding-top: 10px;
+    text-align: center;
+}
+
+.m-form .m-form__group{
+    padding-bottom: 10px !important;
+    padding-top: 0px !important;
+}
+
+.bgimg
+{
+    background-size: cover;
+    background-position: bottom;
+}
+
+.promo_url
+{
+    overflow-wrap: break-word;
+    overflow: hidden;
+    margin-top: 15px;
+}
+
+.divSignin
+{
+    background-color: rgba(0, 0, 0, 0.4);
+    height: 100vh;
+    text-align: center;
+    color: #ffffff !important;
+    padding-top: 15vh;
+}
+
+.divSignin .m-login__head
+{
+    margin-top: 20px;
+}
+
+.divSignin .form-group
+{
+    text-align: left;
+}
+
+.divSignin .m-form__group>label
+{
+    color: #ffffff !important;
+}
+
+.divSignin .m-checkbox
+{
+    color: #ffffff !important;
+}
+
+.divSignin a
+{
+    color: #ffffff !important;
+}
+
+.m-dropdown__arrow
+{
+    color: #197d94 !important;
+}
+
+.dashTotal
+{
+    padding-top: 10px;
+    padding-bottom: 30px;
+    font-size: 25px;
+    font-weight: 300;
+}
+
+.wid_enroll
+{
+    text-align: center;
+    padding-top: 20px;
+    padding-bottom: 20px;
+}
+
+.wid_enroll .c
+{
+    font-size: 40px;
+}
+
+.details-table, .summary-table {
+    margin-top: 15px;
+}
